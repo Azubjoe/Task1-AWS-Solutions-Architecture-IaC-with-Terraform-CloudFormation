@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3 bucket for static files & logs, and EC2 InstanceRole/InstanceProfile with limited S3 + CloudWatch + SSM permissions.
+
+Parameters:
+  StaticBucketName:
+    Type: String
+    Default: django-static-bucket-{{AWS::AccountId}}-us-east-1
+    Description: S3 bucket name for Django static files (must be globally unique)
+
+Resources:
+  StaticBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref StaticBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: logs-policy
+            Status: Enabled
+            ExpirationInDays: 365
+    DeletionPolicy: Retain
+
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub django-ec2-role-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: DjangoS3CloudWatchPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3AccessForStatic
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${StaticBucketName}
+                  - !Sub arn:aws:s3:::${StaticBucketName}/*
+              - Sid: CloudWatchPut
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: SSM
+                Effect: Allow
+                Action:
+                  - ssm:Describe*
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:PutComplianceItems
+                  - ssm:PutInventory
+                Resource: "*"
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub django-instance-profile-${AWS::StackName}
+      Roles:
+        - !Ref EC2InstanceRole
+
+Outputs:
+  StaticBucketName:
+    Value: !Ref StaticBucketName
+    Export:
+      Name: django-static-bucket-name
+
+  EC2InstanceProfile:
+    Value: !Ref EC2InstanceProfile
+    Export:
+      Name: django-ec2-instance-profile

@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This is a VPC with 6 subnets across 2 AZs (public, private-app, private-db per AZ).
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: VPC CIDR
+  AZCount:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    MaxValue: 2
+    Description: Number of AZs to use (2)
+  PublicSubnetCidrs:
+    Type: CommaDelimitedList
+    Default: 10.0.0.0/24,10.0.2.0/24
+    Description: Public subnet CIDRs (comma separated, one per AZ)
+  PrivateAppSubnetCidrs:
+    Type: CommaDelimitedList
+    Default: 10.0.1.0/24,10.0.3.0/24
+    Description: Private app subnet CIDRs (one per AZ)
+  PrivateDBSubnetCidrs:
+    Type: CommaDelimitedList
+    Default: 10.0.4.0/24,10.0.5.0/24
+    Description: Private DB subnet CIDRs (one per AZ)
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: django-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: django-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Create subnets for each AZ
+  PublicSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [0, !Ref PublicSubnetCidrs]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-0
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [1, !Ref PublicSubnetCidrs]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-1
+
+  PrivateAppSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [0, !Ref PrivateAppSubnetCidrs]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-app-subnet-0
+
+  PrivateAppSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [1, !Ref PrivateAppSubnetCidrs]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-app-subnet-1
+
+  PrivateDBSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [0, !Ref PrivateDBSubnetCidrs]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-db-subnet-0
+
+  PrivateDBSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [1, !Ref PrivateDBSubnetCidrs]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-db-subnet-1
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: django-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet0
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT Gateways (one per AZ) + Elastic IPs
+  NatEIP0:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway0:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP0.AllocationId
+      SubnetId: !Ref PublicSubnet0
+      Tags:
+        - Key: Name
+          Value: django-nat-gw-0
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: django-nat-gw-1
+
+  # Private App Route Tables (one per AZ) routed to NAT in same AZ
+  PrivateAppRT0:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: django-private-app-rt-0
+
+  PrivateAppRoute0:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateAppRT0
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway0
+
+  PrivateAppRT1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: django-private-app-rt-1
+
+  PrivateAppRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateAppRT1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateAppSubnet0Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateAppSubnet0
+      RouteTableId: !Ref PrivateAppRT0
+
+  PrivateAppSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateAppSubnet1
+      RouteTableId: !Ref PrivateAppRT1
+
+  # DB subnets route only privately (no NAT)
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for RDS"
+      SubnetIds:
+        - !Ref PrivateDBSubnet0
+        - !Ref PrivateDBSubnet1
+      Tags:
+        - Key: Name
+          Value: django-rds-subnet-group
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: django-vpc-id
+
+  PublicSubnetIds:
+    Value: !Join [',', [!Ref PublicSubnet0, !Ref PublicSubnet1]]
+    Export:
+      Name: django-public-subnet-ids
+
+  PrivateAppSubnetIds:
+    Value: !Join [',', [!Ref PrivateAppSubnet0, !Ref PrivateAppSubnet1]]
+    Export:
+      Name: django-private-app-subnet-ids
+
+  PrivateDBSubnetIds:
+    Value: !Join [',', [!Ref PrivateDBSubnet0, !Ref PrivateDBSubnet1]]
+    Export:
+      Name: django-private-db-subnet-ids

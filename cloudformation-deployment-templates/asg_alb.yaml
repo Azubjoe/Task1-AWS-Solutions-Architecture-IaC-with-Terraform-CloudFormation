@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ALB + TargetGroup + AutoScalingGroup for Django app.
+
+Parameters:
+  KeyName:
+    Type: String
+    Default: DjangoKey.pem
+    Description: EC2 KeyPair name (must exist in region)
+  InstanceType:
+    Type: String
+    Default: t2.micro
+  DesiredCapacity:
+    Type: Number
+    Default: 2
+  MinSize:
+    Type: Number
+    Default: 2
+  MaxSize:
+    Type: Number
+    Default: 4
+
+Mappings:
+  AWSRegion2AMI:
+    us-east-1:
+      AMI: !Ref AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+Resources:
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP(S)
+      VpcId: !ImportValue django-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: alb-sg
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB to app instances and allow outbound to RDS
+      VpcId: !ImportValue django-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: app-sg
+
+  # Application Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: django-alb
+      Subnets: !Split [',', !ImportValue django-public-subnet-ids]
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Scheme: internet-facing
+      Type: application
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: django-tg
+      Port: 8000
+      Protocol: HTTP
+      VpcId: !ImportValue django-vpc-id
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/   # Adjust path for Django health check
+      HealthCheckIntervalSeconds: 30
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # Launch Configuration
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [AWSRegion2AMI, !Ref "AWS::Region", AMI]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref AppSecurityGroup
+      IamInstanceProfile: !ImportValue django-ec2-instance-profile
+      AssociatePublicIpAddress: false
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # install basics, docker, python, awscli
+          yum update -y
+          amazon-linux-extras install -y python3 docker
+          yum install -y git
+          systemctl enable --now docker
+          pip3 install --upgrade pip
+          pip3 install uwsgi boto3 Django psycopg2-binary awsebcli
+          # install and configure CloudWatch agent or awslogs (optional)
+          yum install -y awslogs
+          systemctl enable awslogsd
+          # configure awslogs to stream /var/log/messages (optional default)
+          # Placeholder for app deployment: clone your repo and run migrations
+          # git clone https://github.com/YOURACCOUNT/YOURDJANGOREPO.git /opt/app
+          # cd /opt/app && pip3 install -r requirements.txt
+          # configure environment variables using metadata or SSM
+          # start your application (uWSGI/gunicorn)
+          echo "UserData completed at $(date)" > /tmp/userdata.log
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Split [',', !ImportValue django-private-app-subnet-ids]
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: Name
+          Value: django-app-instance
+          PropagateAtLaunch: true
+
+Outputs:
+  ALBEndpoint:
+    Description: "ALB DNS name"
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: django-alb-dns
+
+  AppSecurityGroupId:
+    Value: !Ref AppSecurityGroup
+    Export:
+      Name: django-app-sg
+
+  ALBSecurityGroupId:
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: django-alb-sg

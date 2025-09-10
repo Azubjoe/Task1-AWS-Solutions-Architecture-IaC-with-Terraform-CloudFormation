@@ -1,0 +1,13 @@
+variable "vpc_id" { type = string }
+variable "app_subnet_ids" { type = list(string) }
+variable "key_name" { type = string }
+variable "public_key_path" { type = string }
+variable "ami_name_filter" { type = string }
+variable "instance_type" { type = string }
+variable "asg_min_size" { type = number }
+variable "asg_max_size" { type = number }
+variable "alb_target_group_arn" { type = string }
+variable "iam_instance_profile" { type = string }
+variable "security_group_ids" { type = list(string) }
+variable "app_repo" { type = string }
+variable "app_branch" { type = string }
